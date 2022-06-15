@@ -92,6 +92,7 @@ typedef struct {
   int delivery_mode;
   int delivery_timestamp;
   char *content_type;
+  int enable_sync_publish;
   mod_amqp_keypart_t format_fields[MAX_ROUTING_KEY_FORMAT_FIELDS+1];
 
 

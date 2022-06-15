@@ -183,6 +183,7 @@ switch_status_t mod_amqp_producer_create(char *name, switch_xml_t cfg)
 	switch_memory_pool_t *pool;
 	char *format_fields[MAX_ROUTING_KEY_FORMAT_FIELDS+1];
 	int format_fields_size = 0;
+    int enable_sync_publish = 0;
 
 	memset(format_fields, 0, (MAX_ROUTING_KEY_FORMAT_FIELDS + 1) * sizeof(char *));
 
@@ -257,6 +258,9 @@ switch_status_t mod_amqp_producer_create(char *name, switch_xml_t cfg)
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_ERROR, "Found exchange parameter. please change to exchange-name\n");
 			} else if (!strncmp(var, "content-type", 12)) {
 				content_type = switch_core_strdup(profile->pool, val);
+			} else if (!strncmp(var, "enable-sync-publish", 19)) {
+				enable_sync_publish = switch_true(val);
+				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "enable sync publish: %d\n", enable_sync_publish);
 			} else if (!strncmp(var, "format_fields", 13)) {
 				char *tmp = switch_core_strdup(profile->pool, val);
 				switch_log_printf(SWITCH_CHANNEL_LOG, SWITCH_LOG_INFO, "amqp format fields : %s\n", tmp);
@@ -295,6 +299,7 @@ switch_status_t mod_amqp_producer_create(char *name, switch_xml_t cfg)
 	profile->delivery_mode = delivery_mode;
 	profile->delivery_timestamp = delivery_timestamp;
 	profile->content_type = content_type ? content_type : switch_core_strdup(profile->pool, MOD_AMQP_DEFAULT_CONTENT_TYPE);
+	profile->enable_sync_publish = enable_sync_publish;
 
 
 	for(i = 0; i < format_fields_size; i++) {
@@ -399,6 +404,7 @@ switch_status_t mod_amqp_producer_send(mod_amqp_producer_profile_t *profile, mod
 	amqp_basic_properties_t props;
 	int status;
 	uint64_t timestamp;
+	amqp_frame_t decoded_frame;
 
 	if (!profile->conn_active) {
 		/* No connection, so we can not send the message. */
@@ -428,8 +434,21 @@ switch_status_t mod_amqp_producer_send(mod_amqp_producer_profile_t *profile, mod
 		messageTableEntries[1].value.kind = AMQP_FIELD_KIND_U64;
 		messageTableEntries[1].value.value.u64 = timestamp;
 	}
+	if(profile->enable_sync_publish == 1) {
+		status = amqp_basic_publish(
+								profile->conn_active->state,
+								1,
+								amqp_cstring_bytes(profile->exchange),
+								amqp_cstring_bytes(msg->routing_key),
+								1,
+								0,
+								&props,
+								amqp_cstring_bytes(msg->pjson));
 
-	status = amqp_basic_publish(
+		status = amqp_simple_wait_frame(profile->conn_active->state, &decoded_frame);
+
+	} else {
+		status = amqp_basic_publish(
 								profile->conn_active->state,
 								1,
 								amqp_cstring_bytes(profile->exchange),
@@ -438,6 +457,7 @@ switch_status_t mod_amqp_producer_send(mod_amqp_producer_profile_t *profile, mod
 								0,
 								&props,
 								amqp_cstring_bytes(msg->pjson));
+	}
 
 	if (status < 0) {
 		const char *errstr = amqp_error_string2(-status);
@@ -504,6 +524,9 @@ void * SWITCH_THREAD_FUNC mod_amqp_producer_thread(switch_thread_t *thread, void
             continue;
         }
 
+        if(profile->enable_sync_publish == 1) {
+        	amqp_confirm_select(profile->conn_active->state, 1);
+        }
         if (msg) {
 #ifdef MOD_AMQP_DEBUG_TIMING
             long times[TIME_STATS_TO_AGGREGATE];
